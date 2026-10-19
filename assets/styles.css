@@ -291,8 +291,7 @@ main,header,footer{position:relative;z-index:1}
 .disclaimer{font-size:13px;color:var(--muted)!important}
 .mapa-mark{display:flex;flex-direction:column;align-items:flex-end;text-decoration:none;color:var(--paper-dim);font-size:13px;opacity:.85;transition:opacity .2s}
 .mapa-mark:hover{opacity:1}
-.mapa-mark strong{font-family:var(--display);font-weight:900;font-size:44px;line-height:.9;letter-spacing:.08em;color:var(--paper)}
-.mapa-mark em{font-style:normal;font-weight:600;letter-spacing:.06em}
+.mapa-mark{gap:8px}.mapa-mark img{width:191px;height:auto}
 .mapa-water{position:absolute;left:50%;bottom:-.24em;transform:translateX(-50%);font-family:var(--display);font-weight:900;font-size:clamp(140px,30vw,420px);line-height:1;letter-spacing:.12em;color:transparent;-webkit-text-stroke:1px rgba(238,241,244,.07);user-select:none;pointer-events:none;white-space:nowrap}
 
 /* ---------------- gaveta de perfil ---------------- */
