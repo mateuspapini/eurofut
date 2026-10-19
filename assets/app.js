@@ -147,74 +147,34 @@ const photoUrl = (file, w = 400) => `https://commons.wikimedia.org/wiki/Special:
 const bioOf = p => BIOS[p.key || p.name];
 
 
-/* ---------- fotos: busca única na Wikipédia, usada na lista e no perfil ---------- */
-const THUMBS = (() => { try { return JSON.parse(localStorage.getItem('ef-thumbs-v2') || '{}'); } catch (e) { return {}; } })();
-const saveThumbs = () => { try { localStorage.setItem('ef-thumbs-v2', JSON.stringify(THUMBS)); } catch (e) {} };
-const thumbPending = new Map();
-let thumbActive = 0; const thumbQueue = [];
-function normName(s) { return s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase(); }
-function titleMatches(title, name) {
-  const t = normName(title), parts = normName(name).split(/\s+/);
-  return t.includes(parts[parts.length - 1]) || t.includes(parts[0]);
+/* ---------- fotos: tabela verificada (data/photos.js) ---------- */
+const PH = (window.EF_PHOTOS && window.EF_PHOTOS.p) || {};
+const WT = (window.EF_PHOTOS && window.EF_PHOTOS.t) || {};
+function wikiThumb(pid, w = 120) {
+  const v = PH[pid]; if (!v) return '';
+  const [wk, a, b, ...rest] = v.split('/'); const fn = rest.join('/');
+  const base = wk === 'c' ? 'commons' : wk;
+  const q = encodeURIComponent(fn).replace(/[!'()*]/g, c => '%' + c.charCodeAt(0).toString(16).toUpperCase());
+  const ext = /\.(svg|tiff?)$/i.test(fn) ? '.png' : '';
+  return `https://upload.wikimedia.org/wikipedia/${base}/thumb/${a}/${b}/${q}/${w}px-${q}${ext}`;
 }
-function runThumbQueue() {
-  while (thumbActive < 4 && thumbQueue.length) {
-    const job = thumbQueue.shift(); thumbActive++;
-    job().finally(() => { thumbActive--; runThumbQueue(); });
-  }
+function photoFor(pid, w) {
+  const bio = bioOf(P[pid]);
+  const list = [];
+  if (bio && bio.photo) list.push(photoUrl(bio.photo, w));
+  const t = wikiThumb(pid, w <= 120 ? 120 : 500); if (t) list.push(t);
+  return list;
 }
-function findThumb(pid) {
-  if (pid in THUMBS && THUMBS[pid] !== null) return Promise.resolve(THUMBS[pid]);
-  if (thumbPending.has(pid)) return thumbPending.get(pid);
-  const p = P[pid], bio = bioOf(p);
-  const pr = new Promise(resolve => {
-    thumbQueue.push(async () => {
-      let url = '', ok = false;
-      const firstClub = CL[ROWS.find(r => r.pid === pid).clubs[0]].name;
-      const langs = S.lang === 'en' ? ['en'] : ['en', S.lang];
-      for (const wl of langs) {
-        try {
-          const base = `https://${wl}.wikipedia.org/w/api.php?action=query&format=json&origin=*&prop=pageimages&piprop=thumbnail&pithumbsize=160&redirects=1`;
-          const word = { pt: 'futebolista', en: 'footballer', es: 'futbolista' }[wl];
-          const title = bio && bio.wiki && bio.wiki[wl];
-          const q = title ? `${base}&titles=${encodeURIComponent(title)}` : `${base}&generator=search&gsrlimit=1&gsrsearch=${encodeURIComponent(`${p.name} ${word} ${firstClub}`)}`;
-          const j = await fetch(q).then(r => r.json());
-          ok = true;
-          const pg = j.query && j.query.pages ? Object.values(j.query.pages)[0] : null;
-          if (pg && pg.thumbnail && (title || titleMatches(pg.title, p.name))) { url = pg.thumbnail.source; break; }
-        } catch (e) { /* rede indisponível */ }
-      }
-      if (ok) { THUMBS[pid] = url; saveThumbs(); }
-      resolve(url);
-    });
-    runThumbQueue();
-  });
-  thumbPending.set(pid, pr);
-  return pr;
-}
-function paintAvatar(pid, url) {
-  if (!url) return;
-  $$(`.av-slot[data-pid="${pid}"]`).forEach(slot => { slot.outerHTML = `<img class="avatar" alt="" src="${esc(url)}" data-pid="${pid}">`; });
-}
-window.__efAvatarFail = img => {
-  const pid = +img.dataset.pid, failed = img.src;
-  const slot = document.createElement('span'); slot.className = 'av-slot'; slot.dataset.pid = pid;
-  slot.innerHTML = `<span class="monogram">${esc(initials(P[pid].name))}</span>`;
-  img.replaceWith(slot);
-  if (THUMBS[pid] && THUMBS[pid] === failed) { THUMBS[pid] = ''; saveThumbs(); return; }
-  findThumb(pid).then(u => { if (u && u !== failed) paintAvatar(pid, u); });
+window.__efImgFail = img => {
+  const next = (img.dataset.next || '').split('|').filter(Boolean);
+  if (next.length) { img.dataset.next = next.slice(1).join('|'); img.src = next[0]; return; }
+  if (img.classList.contains('avatar')) { const s = document.createElement('span'); s.className = 'monogram'; s.textContent = img.dataset.ini || ''; img.replaceWith(s); }
+  else img.parentNode.innerHTML = `<div class="d-shirt">${window.__efShirt}</div>`;
 };
-window.__efDrawerFail = (img, pid) => {
-  const box = img.parentNode;
-  findThumb(pid).then(u => { box.innerHTML = u ? `<img alt="" src="${esc(u.replace(/\/\d+px-/, '/500px-'))}" onerror="this.parentNode.innerHTML='<div class=d-shirt>'+window.__efShirt+'</div>'">` : `<div class="d-shirt">${window.__efShirt}</div>`; });
-};
-const avObserver = 'IntersectionObserver' in window ? new IntersectionObserver(entries => {
-  entries.forEach(en => { if (!en.isIntersecting) return; avObserver.unobserve(en.target); const pid = +en.target.dataset.pid; findThumb(pid).then(u => paintAvatar(pid, u)); });
-}, { rootMargin: '300px' }) : null;
-function watchAvatars(root) {
-  $$('.av-slot', root).forEach(el => { if (avObserver) avObserver.observe(el); else { const pid = +el.dataset.pid; findThumb(pid).then(u => paintAvatar(pid, u)); } });
+function imgTag(pid, w, cls, alt = '') {
+  const urls = photoFor(pid, w); if (!urls.length) return '';
+  return `<img class="${cls}" alt="${esc(alt)}" loading="lazy" decoding="async" src="${esc(urls[0])}" data-next="${esc(urls.slice(1).join('|'))}" data-ini="${esc(initials(P[pid].name))}" onerror="window.__efImgFail(this)">`;
 }
-
 /* ---------- agregação ---------- */
 function aggregate(tab, sys = S.sys, rows = ROWS.filter(inFilter)) {
   const M = new Map();
@@ -323,11 +283,8 @@ function entityCell(tab, e) {
     const p = P[k], bio = bioOf(p);
     const rowsP = ROWS.filter(r => r.pid === k && inFilter(r));
     const clubs = [...new Set(rowsP.flatMap(r => r.clubs))].slice(0, 3).map(c => esc(CL[c].name)).join(', ');
-    const cached = THUMBS[k];
     const mono = `<span class="monogram" style="background:${CO[p.nat].stripes[0]};color:${lum(CO[p.nat].stripes[0]) > .5 ? '#0d1b36' : '#fff'}">${esc(initials(p.name))}</span>`;
-    const av = cached ? `<img class="avatar" alt="" src="${esc(cached)}" data-pid="${k}" onerror="window.__efAvatarFail(this)">`
-      : bio && bio.photo ? `<img class="avatar" alt="" loading="lazy" src="${photoUrl(bio.photo, 120)}" data-pid="${k}" onerror="window.__efAvatarFail(this)">`
-      : `<span class="av-slot" data-pid="${k}">${mono}</span>`;
+    const av = imgTag(k, 120, 'avatar') || mono;
     return `${av}<span class="r-name-txt"><strong>${esc(p.name)}</strong><small><span class="chip">${flag(p.nat)} ${esc(cName(p.nat))}</span><span>${clubs}</span></small></span>`;
   }
   const topPid = [...e.topP.entries()].sort((a, b) => b[1] - a[1])[0][0];
@@ -366,7 +323,6 @@ function renderTable(animate) {
   const box = $('#rtable');
   const before = animate && !reduceMotion ? new Map($$('.rrow', box).map(el => [el.dataset.key, el.getBoundingClientRect().top])) : null;
   box.innerHTML = head + (rowsHtml || `<p class="empty">${esc(T.noResults)}</p>`);
-  watchAvatars(box);
   if (before) {
     $$('.rrow', box).forEach(el => {
       const b = before.get(el.dataset.key), a = el.getBoundingClientRect().top;
@@ -519,21 +475,20 @@ function closeDrawer() {
 }
 const wikiLang = () => S.lang;
 async function wikiSummary(p) {
-  const bio = bioOf(p), wl = wikiLang();
-  try {
-    let title = bio && bio.wiki && bio.wiki[wl];
-    if (!title) {
-      const firstClub = CL[ROWS.find(r => r.pid === p.id).clubs[0]].name;
-      const word = { pt: 'futebolista', en: 'footballer', es: 'futbolista' }[wl];
-      const q = `${p.name} ${word} ${firstClub}`;
-      const s = await fetch(`https://${wl}.wikipedia.org/w/api.php?action=query&list=search&srsearch=${encodeURIComponent(q)}&srlimit=1&format=json&origin=*`).then(r => r.json());
-      title = s.query && s.query.search[0] && s.query.search[0].title;
-      if (!title) return null;
+  const bio = bioOf(p), wl = S.lang;
+  const get = u => fetch(u).then(r => r.ok ? r.json() : null).catch(() => null);
+  let title = bio && bio.wiki && bio.wiki[wl];
+  if (!title && WT[p.id]) {
+    if (wl === 'en') title = WT[p.id];
+    else {
+      const j = await get(`https://en.wikipedia.org/w/api.php?action=query&format=json&origin=*&prop=langlinks&lllang=${wl}&redirects=1&titles=${encodeURIComponent(WT[p.id])}`);
+      const pg = j && j.query ? Object.values(j.query.pages)[0] : null;
+      title = pg && pg.langlinks ? pg.langlinks[0]['*'] : null;
+      if (!title) { const r = await get(`https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(WT[p.id].replace(/ /g, '_'))}`); return r; }
     }
-    const r = await fetch(`https://${wl}.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(title.replace(/ /g, '_'))}`);
-    if (!r.ok) return null;
-    return await r.json();
-  } catch (e) { return null; }
+  }
+  if (!title) return null;
+  return get(`https://${wl}.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(title.replace(/ /g, '_'))}`);
 }
 function honoursHtml(h) {
   if (!h || !h.length) return '';
@@ -557,9 +512,10 @@ function openPlayer(pid) {
     bio && bio.born ? [T.profile.born, `${bio.born}${bio.birthplace ? ', ' + esc(bio.birthplace) : ''}${bio.died ? ` (${T.profile.died} ${bio.died})` : ''}`] : null,
     bio && bio.career ? [T.profile.career, esc(bio.career)] : null
   ].filter(Boolean);
-  const photo = bio && bio.photo
-    ? `<div><div class="d-photo"><img alt="${esc(p.name)}" src="${photoUrl(bio.photo, 500)}" onerror="window.__efDrawerFail(this, ${pid})"></div><p class="d-photo-cap">${T.profile.photoCredit}${bio.photoYear ? ', ' + bio.photoYear : ''}</p></div>`
-    : `<div><div class="d-photo skeleton" id="dPhoto"></div><p class="d-photo-cap" id="dPhotoCap"></p></div>`;
+  const ph = imgTag(pid, 500, '', p.name);
+  const photo = ph
+    ? `<div><div class="d-photo">${ph}</div><p class="d-photo-cap">${T.profile.photoCredit}${bio && bio.photo && bio.photoYear ? ', ' + bio.photoYear : ''}</p></div>`
+    : `<div><div class="d-photo"><div class="d-shirt" id="dShirtSlot"></div></div></div>`;
   window.__efShirt = bigShirt({ c1: cols[0], c2: cols[1], style: STRIPED[mainClub.name], name: p.name, num: eo.best, pattern: 'shards', collar: 'polo' });
   const html = `
   <header class="d-hero">${photo}
@@ -595,12 +551,7 @@ function openPlayer(pid) {
       options: { maintainAspectRatio: false, plugins: { legend: { display: false }, tooltip: { callbacks: { label: c => `${c.parsed.x}: ${c.parsed.y}${T.posAbbr}` } } },
         scales: { x: { min: Math.min(...mine.map(r => r.y)) - 1, max: Math.max(...mine.map(r => r.y)) + 1, ticks: { stepSize: 1, callback: v => String(v) }, grid: { display: false } }, y: { reverse: true, min: 0, suggestedMax: Math.max(10, ...mine.map(r => r.pos)) + 1, ticks: { callback: v => v ? v + T.posAbbr : '' } } } } });
   }
-  if (!(bio && bio.photo)) findThumb(pid).then(u => {
-    const ph = $('#dPhoto'); if (!ph) return;
-    ph.classList.remove('skeleton');
-    ph.innerHTML = u ? `<img alt="${esc(p.name)}" src="${esc(u.replace(/\/\d+px-/, '/500px-'))}" onerror="this.parentNode.innerHTML='<div class=d-shirt>'+window.__efShirt+'</div>'">` : `<div class="d-shirt">${window.__efShirt}</div>`;
-    const cap = $('#dPhotoCap'); if (cap && u) cap.textContent = T.profile.photoCredit;
-  });
+  const slot = $('#dShirtSlot'); if (slot) slot.innerHTML = window.__efShirt;
   wikiSummary(p).then(w => {
     const box = $('#dWiki');
     if (!w) { if (box && !bio) box.innerHTML = `<p>${T.profile.noWiki}</p>`; return; }
