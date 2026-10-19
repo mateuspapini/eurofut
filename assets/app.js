@@ -56,9 +56,7 @@ function lum(hex) {
 }
 function flag(code, cls = 'flag') {
   const c = CO[code]; if (!c) return '';
-  const n = c.stripes.length, dir = c.dir === 'v' ? '90deg' : '180deg';
-  const stops = c.stripes.map((col, i) => `${col} ${(i / n * 100).toFixed(1)}% ${((i + 1) / n * 100).toFixed(1)}%`).join(',');
-  return `<span class="${cls}" style="background:linear-gradient(${dir},${stops})" title="${esc(c[S.lang])}"></span>`;
+  return `<img class="${cls}" src="assets/flags/${code}.svg" alt="${esc(c[S.lang])}" title="${esc(c[S.lang])}" loading="lazy" decoding="async">`;
 }
 let svgUid = 0;
 function miniShirt(c1, c2, style, cls = 'mini') {
@@ -147,6 +145,75 @@ function shirtForEntity(tab, key, label, num) {
 }
 const photoUrl = (file, w = 400) => `https://commons.wikimedia.org/wiki/Special:FilePath/${encodeURIComponent(file)}?width=${w}`;
 const bioOf = p => BIOS[p.key || p.name];
+
+
+/* ---------- fotos: busca única na Wikipédia, usada na lista e no perfil ---------- */
+const THUMBS = (() => { try { return JSON.parse(localStorage.getItem('ef-thumbs-v2') || '{}'); } catch (e) { return {}; } })();
+const saveThumbs = () => { try { localStorage.setItem('ef-thumbs-v2', JSON.stringify(THUMBS)); } catch (e) {} };
+const thumbPending = new Map();
+let thumbActive = 0; const thumbQueue = [];
+function normName(s) { return s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase(); }
+function titleMatches(title, name) {
+  const t = normName(title), parts = normName(name).split(/\s+/);
+  return t.includes(parts[parts.length - 1]) || t.includes(parts[0]);
+}
+function runThumbQueue() {
+  while (thumbActive < 4 && thumbQueue.length) {
+    const job = thumbQueue.shift(); thumbActive++;
+    job().finally(() => { thumbActive--; runThumbQueue(); });
+  }
+}
+function findThumb(pid) {
+  if (pid in THUMBS && THUMBS[pid] !== null) return Promise.resolve(THUMBS[pid]);
+  if (thumbPending.has(pid)) return thumbPending.get(pid);
+  const p = P[pid], bio = bioOf(p);
+  const pr = new Promise(resolve => {
+    thumbQueue.push(async () => {
+      let url = '', ok = false;
+      const firstClub = CL[ROWS.find(r => r.pid === pid).clubs[0]].name;
+      const langs = S.lang === 'en' ? ['en'] : ['en', S.lang];
+      for (const wl of langs) {
+        try {
+          const base = `https://${wl}.wikipedia.org/w/api.php?action=query&format=json&origin=*&prop=pageimages&piprop=thumbnail&pithumbsize=160&redirects=1`;
+          const word = { pt: 'futebolista', en: 'footballer', es: 'futbolista' }[wl];
+          const title = bio && bio.wiki && bio.wiki[wl];
+          const q = title ? `${base}&titles=${encodeURIComponent(title)}` : `${base}&generator=search&gsrlimit=1&gsrsearch=${encodeURIComponent(`${p.name} ${word} ${firstClub}`)}`;
+          const j = await fetch(q).then(r => r.json());
+          ok = true;
+          const pg = j.query && j.query.pages ? Object.values(j.query.pages)[0] : null;
+          if (pg && pg.thumbnail && (title || titleMatches(pg.title, p.name))) { url = pg.thumbnail.source; break; }
+        } catch (e) { /* rede indisponível */ }
+      }
+      if (ok) { THUMBS[pid] = url; saveThumbs(); }
+      resolve(url);
+    });
+    runThumbQueue();
+  });
+  thumbPending.set(pid, pr);
+  return pr;
+}
+function paintAvatar(pid, url) {
+  if (!url) return;
+  $$(`.av-slot[data-pid="${pid}"]`).forEach(slot => { slot.outerHTML = `<img class="avatar" alt="" src="${esc(url)}" data-pid="${pid}">`; });
+}
+window.__efAvatarFail = img => {
+  const pid = +img.dataset.pid, failed = img.src;
+  const slot = document.createElement('span'); slot.className = 'av-slot'; slot.dataset.pid = pid;
+  slot.innerHTML = `<span class="monogram">${esc(initials(P[pid].name))}</span>`;
+  img.replaceWith(slot);
+  if (THUMBS[pid] && THUMBS[pid] === failed) { THUMBS[pid] = ''; saveThumbs(); return; }
+  findThumb(pid).then(u => { if (u && u !== failed) paintAvatar(pid, u); });
+};
+window.__efDrawerFail = (img, pid) => {
+  const box = img.parentNode;
+  findThumb(pid).then(u => { box.innerHTML = u ? `<img alt="" src="${esc(u.replace(/\/\d+px-/, '/500px-'))}" onerror="this.parentNode.innerHTML='<div class=d-shirt>'+window.__efShirt+'</div>'">` : `<div class="d-shirt">${window.__efShirt}</div>`; });
+};
+const avObserver = 'IntersectionObserver' in window ? new IntersectionObserver(entries => {
+  entries.forEach(en => { if (!en.isIntersecting) return; avObserver.unobserve(en.target); const pid = +en.target.dataset.pid; findThumb(pid).then(u => paintAvatar(pid, u)); });
+}, { rootMargin: '300px' }) : null;
+function watchAvatars(root) {
+  $$('.av-slot', root).forEach(el => { if (avObserver) avObserver.observe(el); else { const pid = +el.dataset.pid; findThumb(pid).then(u => paintAvatar(pid, u)); } });
+}
 
 /* ---------- agregação ---------- */
 function aggregate(tab, sys = S.sys, rows = ROWS.filter(inFilter)) {
@@ -256,8 +323,11 @@ function entityCell(tab, e) {
     const p = P[k], bio = bioOf(p);
     const rowsP = ROWS.filter(r => r.pid === k && inFilter(r));
     const clubs = [...new Set(rowsP.flatMap(r => r.clubs))].slice(0, 3).map(c => esc(CL[c].name)).join(', ');
-    const av = bio && bio.photo ? `<img class="avatar" loading="lazy" alt="" src="${photoUrl(bio.photo, 96)}" onerror="this.replaceWith(Object.assign(document.createElement('span'),{className:'monogram',textContent:'${esc(initials(p.name))}'}))">`
-      : `<span class="monogram" style="background:${CO[p.nat].stripes[0]};color:${lum(CO[p.nat].stripes[0]) > .5 ? '#0d1b36' : '#fff'}">${esc(initials(p.name))}</span>`;
+    const cached = THUMBS[k];
+    const mono = `<span class="monogram" style="background:${CO[p.nat].stripes[0]};color:${lum(CO[p.nat].stripes[0]) > .5 ? '#0d1b36' : '#fff'}">${esc(initials(p.name))}</span>`;
+    const av = cached ? `<img class="avatar" alt="" src="${esc(cached)}" data-pid="${k}" onerror="window.__efAvatarFail(this)">`
+      : bio && bio.photo ? `<img class="avatar" alt="" loading="lazy" src="${photoUrl(bio.photo, 120)}" data-pid="${k}" onerror="window.__efAvatarFail(this)">`
+      : `<span class="av-slot" data-pid="${k}">${mono}</span>`;
     return `${av}<span class="r-name-txt"><strong>${esc(p.name)}</strong><small><span class="chip">${flag(p.nat)} ${esc(cName(p.nat))}</span><span>${clubs}</span></small></span>`;
   }
   const topPid = [...e.topP.entries()].sort((a, b) => b[1] - a[1])[0][0];
@@ -296,6 +366,7 @@ function renderTable(animate) {
   const box = $('#rtable');
   const before = animate && !reduceMotion ? new Map($$('.rrow', box).map(el => [el.dataset.key, el.getBoundingClientRect().top])) : null;
   box.innerHTML = head + (rowsHtml || `<p class="empty">${esc(T.noResults)}</p>`);
+  watchAvatars(box);
   if (before) {
     $$('.rrow', box).forEach(el => {
       const b = before.get(el.dataset.key), a = el.getBoundingClientRect().top;
@@ -487,7 +558,7 @@ function openPlayer(pid) {
     bio && bio.career ? [T.profile.career, esc(bio.career)] : null
   ].filter(Boolean);
   const photo = bio && bio.photo
-    ? `<div><div class="d-photo"><img alt="${esc(p.name)}" src="${photoUrl(bio.photo, 500)}" onerror="this.parentNode.innerHTML='<div class=d-shirt>'+window.__efShirt+'</div>'"></div><p class="d-photo-cap">${T.profile.photoCredit}${bio.photoYear ? ', ' + bio.photoYear : ''}</p></div>`
+    ? `<div><div class="d-photo"><img alt="${esc(p.name)}" src="${photoUrl(bio.photo, 500)}" onerror="window.__efDrawerFail(this, ${pid})"></div><p class="d-photo-cap">${T.profile.photoCredit}${bio.photoYear ? ', ' + bio.photoYear : ''}</p></div>`
     : `<div><div class="d-photo skeleton" id="dPhoto"></div><p class="d-photo-cap" id="dPhotoCap"></p></div>`;
   window.__efShirt = bigShirt({ c1: cols[0], c2: cols[1], style: STRIPED[mainClub.name], name: p.name, num: eo.best, pattern: 'shards', collar: 'polo' });
   const html = `
@@ -524,17 +595,16 @@ function openPlayer(pid) {
       options: { maintainAspectRatio: false, plugins: { legend: { display: false }, tooltip: { callbacks: { label: c => `${c.parsed.x}: ${c.parsed.y}${T.posAbbr}` } } },
         scales: { x: { min: Math.min(...mine.map(r => r.y)) - 1, max: Math.max(...mine.map(r => r.y)) + 1, ticks: { stepSize: 1, callback: v => String(v) }, grid: { display: false } }, y: { reverse: true, min: 0, suggestedMax: Math.max(10, ...mine.map(r => r.pos)) + 1, ticks: { callback: v => v ? v + T.posAbbr : '' } } } } });
   }
+  if (!(bio && bio.photo)) findThumb(pid).then(u => {
+    const ph = $('#dPhoto'); if (!ph) return;
+    ph.classList.remove('skeleton');
+    ph.innerHTML = u ? `<img alt="${esc(p.name)}" src="${esc(u.replace(/\/\d+px-/, '/500px-'))}" onerror="this.parentNode.innerHTML='<div class=d-shirt>'+window.__efShirt+'</div>'">` : `<div class="d-shirt">${window.__efShirt}</div>`;
+    const cap = $('#dPhotoCap'); if (cap && u) cap.textContent = T.profile.photoCredit;
+  });
   wikiSummary(p).then(w => {
     const box = $('#dWiki');
-    if (!w) { if (box && !bio) box.innerHTML = `<p>${T.profile.noWiki}</p>`; const ph = $('#dPhoto'); if (ph) { ph.classList.remove('skeleton'); ph.innerHTML = `<div class="d-shirt">${window.__efShirt}</div>`; } return; }
+    if (!w) { if (box && !bio) box.innerHTML = `<p>${T.profile.noWiki}</p>`; return; }
     if (box) box.innerHTML = `${bio ? '' : `<p>${esc(w.extract || '')}</p>`}<p><small>${T.profile.wikiSummary}</small> <a href="${esc(w.content_urls && w.content_urls.desktop.page)}" target="_blank" rel="noopener">${T.profile.readMore}</a></p>`;
-    const ph = $('#dPhoto');
-    if (ph) {
-      ph.classList.remove('skeleton');
-      const img = w.originalimage || w.thumbnail;
-      ph.innerHTML = img ? `<img alt="${esc(p.name)}" src="${esc((w.thumbnail || img).source.replace(/\/\d+px-/, '/500px-'))}" onerror="this.parentNode.innerHTML='<div class=d-shirt>'+window.__efShirt+'</div>'">` : `<div class="d-shirt">${window.__efShirt}</div>`;
-      const cap = $('#dPhotoCap'); if (cap && img) cap.textContent = T.profile.photoCredit;
-    }
   });
 }
 function openEntity(tab, key) {
